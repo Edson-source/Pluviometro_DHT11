@@ -1,66 +1,43 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h> //essa biblioteca já vem com a IDE. Portanto, não é preciso baixar nenhuma biblioteca adicional
-#include <DHT.h>
- 
-/*
-* Defines do projeto
-*/
-//GPIO do NodeMCU que o pino de comunicação do sensor está ligado.
-#define DHTPIN D1
- 
-/* defines - wi-fi */
-#define SSID_REDE "lab120" /* coloque aqui o nome da rede que se deseja conectar */
-#define SENHA_REDE "labredes120" /* coloque aqui a senha da rede que se deseja conectar */
-#define INTERVALO_ENVIO_THINGSPEAK 30000 /* intervalo entre envios de dados ao ThingSpeak (em ms) */
+#include <ESP8266WiFi.h>        //essa biblioteca já vem com a IDE. Portanto, não é preciso baixar nenhuma biblioteca adicional
+#include <DHT.h>                // Biblioteca DHT
+#include <SPI.h>                // SSD1396
+#include <Wire.h>               // SSD1396
+#include <Adafruit_Sensor.h>
+#include <Adafruit_GFX.h>       // SSD1396
+#include <Adafruit_SSD1306.h>   // SSD1396
+
+/* Defines do projeto */
+#define DHTPIN D5         // pin onde dht esta conectado
+#define REED D0
+
+#define DIAMETRO 125       // diametro interno do balde
+#define VOLUME 4.5         // volume da bascula (em cm3) (1cm3 == 1mm)
+
+
+#define SSID_REDE "" /* coloque aqui o nome da rede que se deseja conectar */
+#define SENHA_REDE "" /* coloque aqui a senha da rede que se deseja conectar */
   
 #define DHTTYPE DHT11 // DHT 11
-//#define DHTTYPE DHT22 // DHT 22 (AM2302), AM2321
  
 /* constantes e variáveis globais */
-char endereco_api_thingspeak[] = "api.thingspeak.com";
-String chave_escrita_thingspeak = "VZ83UYMSDWYLIHDB";  /* Coloque aqui sua chave de escrita do seu canal */
-unsigned long last_connection_time;
 WiFiClient client;
 DHT dht(DHTPIN, DHTTYPE);
+Adafruit_SSD1306 display(128, 64);           			// Cria objeto display
 
 /* prototypes */
-void envia_informacoes_thingspeak(String string_dados);
 void init_wifi(void);
 void conecta_wifi(void);
 void verifica_conexao_wifi(void);
- 
-/*
-* Implementações
-*/
- 
-/* Função: envia informações ao ThingSpeak
-* Parâmetros: String com a informação a ser enviada
-* Retorno: nenhum
-*/
-void envia_informacoes_thingspeak(String string_dados)
-{
-    if (client.connect(endereco_api_thingspeak, 80))
-    {
-        /* faz a requisição HTTP ao ThingSpeak */
-        client.print("POST /update HTTP/1.1\n");
-        client.print("Host: api.thingspeak.com\n");
-        client.print("Connection: close\n");
-        client.print("X-THINGSPEAKAPIKEY: "+chave_escrita_thingspeak+"\n");
-        client.print("Content-Type: application/x-www-form-urlencoded\n");
-        client.print("Content-Length: ");
-        client.print(string_dados.length());
-        client.print("\n\n");
-        client.print(string_dados);
-         
-        last_connection_time = millis();
-        Serial.println("- Informações enviadas ao ThingSpeak!");
-    }
-}
- 
-/* Função: inicializa wi-fi
-* Parametros: nenhum
-* Retorno: nenhum
-*/
+
+float temperatura_lida = 0.0;
+float umidade_lida = 0.0;
+
+// Variáveis:
+int val = 0;
+int old_val = 0;
+int REEDCOUNT = 0;
+
 void init_wifi(void)
 {
     Serial.println("------WI-FI -----");
@@ -70,11 +47,7 @@ void init_wifi(void)
  
     conecta_wifi();
 }
- 
-/* Função: conecta-se a rede wi-fi
-* Parametros: nenhum
-* Retorno: nenhum
-*/
+
 void conecta_wifi(void)
 {
     /* Se ja estiver conectado, nada é feito. */
@@ -94,55 +67,75 @@ void conecta_wifi(void)
     Serial.println("Conectado com sucesso a rede wi-fi \n");
     Serial.println(SSID_REDE);
 }
- 
-/* Função: verifica se a conexao wi-fi está ativa
-* (e, em caso negativo, refaz a conexao)
-* Parametros: nenhum
-* Retorno: nenhum
-*/
+
 void verifica_conexao_wifi(void)
 {
     conecta_wifi();
 }
- 
+
 void setup()
 {
     Serial.begin(115200);
-    last_connection_time = 0;
- 
+
     /* Inicializa sensor de temperatura e umidade relativa do ar */
     dht.begin();
- 
+
+    /* Inicializa o display OLED */
+    display.begin(SSD1306_SWITCHCAPVCC, 0x3C);      //INICIALIZA O DISPLAY COM ENDEREÇO I2C 0x3C
+    display.setTextColor(WHITE);                    //DEFINE A COR DO TEXTO
+    display.setTextSize(0);                         //DEFINE O TAMANHO DA FONTE DO TEXTO
+    display.clearDisplay();                         //LIMPA AS INFORMAÇÕES DO DISPLAY
+    display.dim(0);                                 //DEFINE BRILHO ('0' PARA MAXIMO E '1' PARA MINIMO)
+
+    pinMode(REED, INPUT_PULLUP);
     /* Inicializa e conecta-se ao wi-fi */
     init_wifi();
 }
  
-//loop principal
 void loop()
 {
-    char fields_a_serem_enviados[100] = {0};
-    float temperatura_lida = 0.0;
-    float umidade_lida = 0.0;
- 
-    /* Força desconexão ao ThingSpeak (se ainda estiver conectado) */
-    if (client.connected())
-    {
-        client.stop();
-        Serial.println("- Desconectado do ThingSpeak");
-        Serial.println();
-    }
- 
     /* Garante que a conexão wi-fi esteja ativa */
     verifica_conexao_wifi();
-     
-    /* Verifica se é o momento de enviar dados para o ThingSpeak */
-    if( millis() - last_connection_time > INTERVALO_ENVIO_THINGSPEAK )
-    {
-        temperatura_lida = dht.readTemperature();
-        umidade_lida = dht.readHumidity();
-        sprintf(fields_a_serem_enviados,"field1=%.2f&field2=%.2f", temperatura_lida, umidade_lida);
-        envia_informacoes_thingspeak(fields_a_serem_enviados);
+
+    temperatura_lida = dht.readTemperature();
+    umidade_lida = dht.readHumidity();    
+
+    bool val = digitalRead(REED);      // Lê o Status do Reed Switch
+
+    if ((val == LOW && old_val == HIGH)) {    // Verefica se o Status mudou
+        delay(10);                              // Atraso colocado para lidar com qualquer "salto" no switch.
+        REEDCOUNT = REEDCOUNT + 1;              // Adiciona 1 à cntagem de pulsos
+        old_val = val;                          //Iguala o valor antigo com o atual
     }
- 
-    delay(1000);
+    else {
+        old_val = val;               //If the status hasn't changed then do nothing
+    }
+
+
+    float area_recipiente = 3.1415 * DIAMETRO; // área da seção transversal do recipiente em cm²
+    float volume_por_virada = (VOLUME/area_recipiente);  // altura lamina de agua no interior do balde por virada
+    float volume_coletado = (REEDCOUNT * volume_por_virada); // volume total coletado em cm³
+
+    display.clearDisplay();
+    display.setCursor(10,10);               //POSIÇÃO EM QUE O CURSOR IRÁ FAZER A ESCRITA
+    display.print("T: ");                    //ESCREVE O TEXTO NO DISPLAY
+    display.setCursor(20,10);               //POSIÇÃO EM QUE O CURSOR IRÁ FAZER A ESCRITA
+    display.println(temperatura_lida);
+    display.setCursor(10,20);               //POSIÇÃO EM QUE O CURSOR IRÁ FAZER A ESCRITA
+    display.print("U: ");                    //ESCREVE O TEXTO NO DISPLAY
+    display.setCursor(20,20);               //POSIÇÃO EM QUE O CURSOR IRÁ FAZER A ESCRITA
+    display.println(umidade_lida);
+    display.display();
+    display.setCursor(10,30);
+    display.print("Viradas: ");
+    display.setCursor(60,30);               //POSIÇÃO EM QUE O CURSOR IRÁ FAZER A ESCRITA
+    display.print(REEDCOUNT);
+    display.display();
+    display.setCursor(10,40);
+    display.print("Chuva: ");
+    display.setCursor(60,40);               //POSIÇÃO EM QUE O CURSOR IRÁ FAZER A ESCRITA
+    display.print(volume_coletado);
+    display.print(" mm");
+    display.display();
+
 }
